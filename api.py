@@ -8,7 +8,7 @@ import json, os
 import sys
 import subprocess
 
-UPLOAD_FOLDER = '/Users/lkhamsurenl/Development/ioception'
+UPLOAD_FOLDER = '/Users/lkhamsurenl/Development/restception'
 
 ## config
 ALLOWED_EXTENSIONS = ['jpg', 'jpeg', 'png']
@@ -58,7 +58,10 @@ class UploadImage(Resource):
 
         filename = secure_filename(image.filename)
         fullpath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        image.save(fullpath)
+        
+        mode = 'a' if os.path.exists(fullpath) else 'w'
+        with open(fullpath, mode) as f:
+            image.save(fullpath)
 
         # Run the algorithm here to classify the image.
         output = []
@@ -77,4 +80,5 @@ api.add_resource(UploadImage, '/upload')
 
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    #app.run(debug=True)
+    app.run(host='0.0.0.0', debug=True)

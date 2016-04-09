@@ -8,7 +8,7 @@ import json, os
 import sys
 import subprocess
 
-UPLOAD_FOLDER = '/Users/lkhamsurenl/Development/restception'
+UPLOAD_FOLDER = '/Users/lkhamsurenl/Development/restception/images'
 
 ## config
 ALLOWED_EXTENSIONS = ['jpg', 'jpeg', 'png']

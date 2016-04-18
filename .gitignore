@@ -6,7 +6,6 @@
 *.exe
 *.o
 *.so
-*.pyc
 
 # Packages #
 ############
@@ -37,7 +36,6 @@
 ehthumbs.db
 Thumbs.db
 
-# Images #
-#######################
-*.png
-*.jpg
+# Image files  #
+######################
+/images

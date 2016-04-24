@@ -8,6 +8,7 @@ from werkzeug.datastructures import FileStorage
 from werkzeug import secure_filename
 
 from cStringIO import StringIO
+from datetime import date
 import json, os
 import sys
 import subprocess
@@ -36,18 +37,11 @@ UPLOAD_FOLDER = '/Users/lkhamsurenl/Development/restception/images'
 
 ## config
 ALLOWED_EXTENSIONS = ['jpg', 'jpeg', 'png']
-FILE_CONTENT_TYPES = { # these will be used to set the content type of S3 object. It is binary by default.
+FILE_CONTENT_TYPES = { 
     'jpg': 'image/jpeg',
     'jpeg': 'image/jpeg',
     'png': 'image/png'
 }
-
-## app initilization
-app = Flask(__name__)
-app.config.from_object(__name__)
-
-## extensions
-api = FlaskRestfulAPI(app)
 
 ############################ Inception on Tensorflow ###########################
 tf.app.flags.DEFINE_string(
@@ -191,6 +185,13 @@ def run_inference_on_image(image_name, graph):
     return labels
 
 ############################      Rest API        ###########################
+## app initilization
+app = Flask(__name__)
+app.config.from_object(__name__)
+
+## extensions
+api = FlaskRestfulAPI(app)
+
 class FileStorageArgument(reqparse.Argument):
     """This argument class for flask-restful will be used in
     all cases where file uploads need to be handled."""
@@ -221,6 +222,7 @@ class UploadImage(Resource):
     node_lookup = NodeLookup()
 
     def get(self):
+        """Get has not been implemented yet."""
     	args = self.put_parser.parse_args()
         image = args["image"]
 
@@ -233,9 +235,14 @@ class UploadImage(Resource):
         args = self.put_parser.parse_args()
         image = args["image"]
 
+        # File will be in nested directory of UPLOAD_FOLDER/YY/MM/DD.
         filename = secure_filename(image.filename)
-        fullpath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        
+        today_date = date.today().strftime("%y/%m/%d")
+        fullpath = os.path.join(app.config['UPLOAD_FOLDER'], today_date, filename)
+        directory = os.path.dirname(fullpath)
+
+        if not os.path.exists(directory):
+            os.makedirs(directory)
         mode = 'a' if os.path.exists(fullpath) else 'w'
         with open(fullpath, mode) as f:
             image.save(fullpath)

@@ -1,3 +1,7 @@
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+
 from flask import Flask, request
 from flask.ext.restful import Api as FlaskRestfulAPI, Resource, reqparse, abort
 from werkzeug.datastructures import FileStorage
@@ -7,6 +11,26 @@ from cStringIO import StringIO
 import json, os
 import sys
 import subprocess
+
+import os.path
+import re
+import sys
+import tarfile
+
+# pylint: disable=unused-import,g-bad-import-order
+import tensorflow.python.platform
+from six.moves import urllib
+import numpy as np
+import tensorflow as tf
+# pylint: enable=unused-import,g-bad-import-order
+
+from tensorflow.python.platform import gfile
+
+FLAGS = tf.app.flags.FLAGS
+
+# pylint: disable=line-too-long
+DATA_URL = 'http://download.tensorflow.org/models/image/imagenet/inception-2015-12-05.tgz'
+# pylint: enable=line-too-long
 
 UPLOAD_FOLDER = '/Users/lkhamsurenl/Development/restception/images'
 
@@ -25,7 +49,148 @@ app.config.from_object(__name__)
 ## extensions
 api = FlaskRestfulAPI(app)
 
+############################ Inception on Tensorflow ###########################
+tf.app.flags.DEFINE_string(
+    'model_dir', '/tmp/imagenet',
+    """Path to classify_image_graph_def.pb, """
+    """imagenet_synset_to_human_label_map.txt, and """
+    """imagenet_2012_challenge_label_map_proto.pbtxt.""")
 
+tf.app.flags.DEFINE_integer('num_top_predictions', 5,
+                            """Display this many predictions.""")
+
+def maybe_download_and_extract():
+  """Download and extract model tar file."""
+  dest_directory = FLAGS.model_dir
+  if not os.path.exists(dest_directory):
+    os.makedirs(dest_directory)
+  filename = DATA_URL.split('/')[-1]
+  filepath = os.path.join(dest_directory, filename)
+  if not os.path.exists(filepath):
+    def _progress(count, block_size, total_size):
+      sys.stdout.write('\r>> Downloading %s %.1f%%' % (
+          filename, float(count * block_size) / float(total_size) * 100.0))
+      sys.stdout.flush()
+    filepath, _ = urllib.request.urlretrieve(DATA_URL, filepath,
+                                             reporthook=_progress)
+    print()
+    statinfo = os.stat(filepath)
+    print('Succesfully downloaded', filename, statinfo.st_size, 'bytes.')
+  tarfile.open(filepath, 'r:gz').extractall(dest_directory)
+
+def create_graph():
+  """"Creates a graph from saved GraphDef file and returns a saver."""
+  # Creates graph from saved graph_def.pb.
+  with gfile.FastGFile(os.path.join(
+      FLAGS.model_dir, 'classify_image_graph_def.pb'), 'rb') as f:
+    graph_def = tf.GraphDef()
+    graph_def.ParseFromString(f.read())
+    
+    _ = tf.import_graph_def(graph_def, name='')
+    return tf.get_default_graph()
+
+class NodeLookup(object):
+  """Converts integer node ID's to human readable labels."""
+
+  def __init__(self,
+               label_lookup_path=None,
+               uid_lookup_path=None):
+    if not label_lookup_path:
+      label_lookup_path = os.path.join(
+          FLAGS.model_dir, 'imagenet_2012_challenge_label_map_proto.pbtxt')
+    if not uid_lookup_path:
+      uid_lookup_path = os.path.join(
+          FLAGS.model_dir, 'imagenet_synset_to_human_label_map.txt')
+    self.node_lookup = self.load(label_lookup_path, uid_lookup_path)
+
+  def load(self, label_lookup_path, uid_lookup_path):
+    """Loads a human readable English name for each softmax node.
+
+    Args:
+      label_lookup_path: string UID to integer node ID.
+      uid_lookup_path: string UID to human-readable string.
+
+    Returns:
+      dict from integer node ID to human-readable string.
+    """
+    if not gfile.Exists(uid_lookup_path):
+      tf.logging.fatal('File does not exist %s', uid_lookup_path)
+    if not gfile.Exists(label_lookup_path):
+      tf.logging.fatal('File does not exist %s', label_lookup_path)
+
+    # Loads mapping from string UID to human-readable string
+    proto_as_ascii_lines = gfile.GFile(uid_lookup_path).readlines()
+    uid_to_human = {}
+    p = re.compile(r'[n\d]*[ \S,]*')
+    for line in proto_as_ascii_lines:
+      parsed_items = p.findall(line)
+      uid = parsed_items[0]
+      human_string = parsed_items[2]
+      uid_to_human[uid] = human_string
+
+    # Loads mapping from string UID to integer node ID.
+    node_id_to_uid = {}
+    proto_as_ascii = gfile.GFile(label_lookup_path).readlines()
+    for line in proto_as_ascii:
+      if line.startswith('  target_class:'):
+        target_class = int(line.split(': ')[1])
+      if line.startswith('  target_class_string:'):
+        target_class_string = line.split(': ')[1]
+        node_id_to_uid[target_class] = target_class_string[1:-2]
+
+    # Loads the final mapping of integer node ID to human-readable string
+    node_id_to_name = {}
+    for key, val in node_id_to_uid.items():
+      if val not in uid_to_human:
+        tf.logging.fatal('Failed to locate: %s', val)
+      name = uid_to_human[val]
+      node_id_to_name[key] = name
+
+    return node_id_to_name
+
+  def id_to_string(self, node_id):
+    if node_id not in self.node_lookup:
+      return ''
+    return self.node_lookup[node_id]
+
+def run_inference_on_image(image_name, graph):
+  """Runs inference on an image.
+
+  Args:
+    image_name: Image file name.
+    graph: Tensorflow graph corresponding to the session.
+
+  Returns:
+    List of labels in format {"id": id, "score": score}
+  """
+  if not gfile.Exists(image_name):
+    tf.logging.fatal('File does not exist %s', image_name)
+  image_data = gfile.FastGFile(image_name, 'rb').read()
+
+  with tf.Session(graph=graph) as sess:
+    # Some useful tensors:
+    # 'softmax:0': A tensor containing the normalized prediction across
+    #   1000 labels.
+    # 'pool_3:0': A tensor containing the next-to-last layer containing 2048
+    #   float description of the image.
+    # 'DecodeJpeg/contents:0': A tensor containing a string providing JPEG
+    #   encoding of the image.
+    # Runs the softmax tensor by feeding the image_data as input to the graph.
+    softmax_tensor = sess.graph.get_tensor_by_name('softmax:0')
+    predictions = sess.run(softmax_tensor,
+                           {'DecodeJpeg/contents:0': image_data})
+    predictions = np.squeeze(predictions)
+
+    top_k = predictions.argsort()[-FLAGS.num_top_predictions:][::-1]
+
+    # Return most probabilistic labels.
+    labels = []
+    for node_id in top_k:
+      score = predictions[node_id]
+      labels.append({"id": node_id, "score": str(score)})
+    return labels
+
+############################      Rest API        ###########################
 class FileStorageArgument(reqparse.Argument):
     """This argument class for flask-restful will be used in
     all cases where file uploads need to be handled."""
@@ -46,6 +211,15 @@ class UploadImage(Resource):
     put_parser = reqparse.RequestParser(argument_class=FileStorageArgument)
     put_parser.add_argument("image", required=True, type=FileStorage, location='files')
 
+    # download inception, if does not exist already.
+    maybe_download_and_extract()
+
+    # Creates graph from saved GraphDef.
+    graph = create_graph()
+
+    # Creates node ID --> English string lookup, associated with the graph.
+    node_lookup = NodeLookup()
+
     def get(self):
     	args = self.put_parser.parse_args()
         image = args["image"]
@@ -53,6 +227,9 @@ class UploadImage(Resource):
     	return json.dumps({'hello': 'world'})
 
     def post(self):
+        """Posts an image from user to classify. Runs inception NN on the image
+        then return top labels to the user.
+        """
         args = self.put_parser.parse_args()
         image = args["image"]
 
@@ -63,17 +240,14 @@ class UploadImage(Resource):
         with open(fullpath, mode) as f:
             image.save(fullpath)
 
-        # Run the algorithm here to classify the image.
-        output = []
-        labels = subprocess.check_output([sys.executable, "classify_image.py", \
-            "--image_file", fullpath])
-        labels = labels.split('\n')
+        # Run feed-forward net with image on graph to get top labels for image.
+        labels = run_inference_on_image(fullpath, self.graph)
         for label in labels:
-            label = label.split("=")
-            if len(label) == 2: # It is a valid text: score pair.
-                output.append({'name': label[0], 'score': label[1]})
+            label["name"] = self.node_lookup.id_to_string(label["id"])
+            # Remove "id", since it is meaningless for user.
+            del label["id"]
 
-        return json.dumps(output)
+        return json.dumps(labels)
 
 
 api.add_resource(UploadImage, '/upload')

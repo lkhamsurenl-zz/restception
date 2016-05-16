@@ -44,14 +44,17 @@ FILE_CONTENT_TYPES = {
 }
 
 ############################ Inception on Tensorflow ###########################
+
+# TODO(lkhamsurenl): Change the directory to permanent so that imagenet does 
+# not get removed after some time.
 tf.app.flags.DEFINE_string(
-    'model_dir', '/tmp/imagenet',
+    'model_dir', '/Users/lkhamsurenl/Development/restception/imagenet',
     """Path to classify_image_graph_def.pb, """
     """imagenet_synset_to_human_label_map.txt, and """
     """imagenet_2012_challenge_label_map_proto.pbtxt.""")
 
 tf.app.flags.DEFINE_integer('num_top_predictions', 5,
-                            """Display this many predictions.""")
+                            """Display this many predictions.""")`
 
 def maybe_download_and_extract():
   """Download and extract model tar file."""
